@@ -10,6 +10,7 @@ class InputFrame(tk.LabelFrame):
         super().__init__(parent, text="Input Hex Data", padx=5, pady=5)
         self.callback = callback
         self.highlight_tag = "highlight"
+        self.selection_tag = "selection_highlight"  # New tag for selection highlights
         
         # Import button
         button_frame = tk.Frame(self)
@@ -21,7 +22,12 @@ class InputFrame(tk.LabelFrame):
         self.text_input = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
         self.text_input.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.text_input.tag_configure(self.highlight_tag, background="#cc7000", foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
+        self.text_input.tag_configure(self.selection_tag, background="#4a6984", foreground="#ffffff")  # Configure the selection highlight tag
         self.text_input.bind("<<Modified>>", self.on_input_change)
+        
+        # Bind to selection events
+        self.text_input.bind("<ButtonRelease-1>", self.on_selection_change)  # Mouse button release
+        self.text_input.bind("<KeyRelease>", self.on_selection_change)      # Keyboard selection changes
     
     def import_file(self):
         """Import and display binary file as hex"""
@@ -42,6 +48,51 @@ class InputFrame(tk.LabelFrame):
         if self.text_input.edit_modified():
             self.callback()
             self.text_input.edit_modified(False)
+    
+    def on_selection_change(self, event=None):
+        """Handle text selection changes"""
+        try:
+            # Clear previous selection highlights
+            self.text_input.tag_remove(self.selection_tag, "1.0", tk.END)
+            
+            # Get the selected text
+            if self.text_input.tag_ranges(tk.SEL):
+                selected_text = self.text_input.get(tk.SEL_FIRST, tk.SEL_LAST)
+                
+                # Only proceed if we have meaningful selection
+                if selected_text and len(selected_text.strip()) > 0:
+                    self.highlight_selection(selected_text)
+        except tk.TclError:
+            # No selection exists
+            pass
+    
+    def highlight_selection(self, text_to_highlight):
+        """Highlight all occurrences of the selected text"""
+        if not text_to_highlight or text_to_highlight.isspace():
+            return
+        
+        # Escape special regex characters
+        escaped_text = re.escape(text_to_highlight)
+        
+        # Highlight all occurrences
+        start_idx = "1.0"
+        while True:
+            start_idx = self.text_input.search(escaped_text, start_idx, 
+                                             stopindex=tk.END, 
+                                             regexp=True,
+                                             nocase=False)
+            if not start_idx:
+                break
+                
+            end_idx = f"{start_idx}+{len(text_to_highlight)}c"
+            
+            # Don't apply tag to the current selection to avoid tag conflict
+            if not (self.text_input.tag_ranges(tk.SEL) and 
+                   start_idx == self.text_input.index(tk.SEL_FIRST) and 
+                   end_idx == self.text_input.index(tk.SEL_LAST)):
+                self.text_input.tag_add(self.selection_tag, start_idx, end_idx)
+            
+            start_idx = end_idx
     
     def get_input(self):
         return self.text_input.get("1.0", tk.END).strip()
