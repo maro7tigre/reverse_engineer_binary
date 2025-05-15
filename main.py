@@ -20,6 +20,7 @@ class InputFrame(tb.LabelFrame):
         self.callback = callback
         self.highlight_tag = "highlight"
         self.selection_tag = "selection_highlight"
+        self.rule_tags = []  # Keep track of rule highlight tags
         
         # Import button and occurrence counter
         button_frame = tb.Frame(self)
@@ -38,6 +39,9 @@ class InputFrame(tb.LabelFrame):
         # Configure tags for highlighting
         self.text_input.tag_configure(self.highlight_tag, background="#cc7000", foreground="white", font=("TkDefaultFont", 10, "bold"))
         self.text_input.tag_configure(self.selection_tag, background="#4a6984", foreground="white")
+        
+        # Make selection tag have higher priority than rule tags
+        self.text_input.tag_raise(self.selection_tag)
         
         self.text_input.bind("<<Modified>>", self.on_input_change)
         self.text_input.bind("<ButtonRelease-1>", self.on_selection_change)
@@ -120,12 +124,10 @@ class InputFrame(tb.LabelFrame):
                 
             end_idx = f"{start_idx}+{len(text_to_highlight)}c"
             
-            # Don't apply tag to the current selection to avoid tag conflict
-            if not (self.text_input.tag_ranges(tk.SEL) and 
-                   start_idx == self.text_input.index(tk.SEL_FIRST) and 
-                   end_idx == self.text_input.index(tk.SEL_LAST)):
-                self.text_input.tag_add(self.selection_tag, start_idx, end_idx)
-                occurrence_count += 1
+            # Apply the selection tag regardless of other tags
+            # The tag_raise() call in __init__ ensures it shows on top
+            self.text_input.tag_add(self.selection_tag, start_idx, end_idx)
+            occurrence_count += 1
             
             start_idx = end_idx
         
@@ -136,10 +138,12 @@ class InputFrame(tb.LabelFrame):
     
     def highlight_patterns(self, patterns, colors=None):
         """Highlight matching patterns in input text with custom colors"""
-        # Clear all previous highlight tags
-        for tag in self.text_input.tag_names():
-            if tag.startswith("color_") or tag == self.highlight_tag:
-                self.text_input.tag_remove(tag, "1.0", tk.END)
+        # Clear only the rule highlight tags
+        for tag in self.rule_tags:
+            self.text_input.tag_remove(tag, "1.0", tk.END)
+        
+        # Reset rule tags list
+        self.rule_tags = []
         
         input_text = self.get_input()
         if not input_text or not patterns:
@@ -159,11 +163,16 @@ class InputFrame(tb.LabelFrame):
             
             # Create a unique tag for this color if it doesn't exist
             tag_name = f"color_{i}"
+            self.rule_tags.append(tag_name)  # Add to our list of rule tags
+            
             if tag_name not in self.text_input.tag_names():
                 self.text_input.tag_configure(tag_name, background=color, foreground="white", font=("TkDefaultFont", 10, "bold"))
             else:
                 # Update existing tag's color
                 self.text_input.tag_configure(tag_name, background=color)
+            
+            # Ensure selection tag has higher priority
+            self.text_input.tag_lower(tag_name, self.selection_tag)
             
             for match in re.finditer(regex_pattern, content):
                 start_pos = match.start()
@@ -218,6 +227,9 @@ class ColorSquare(tk.Frame):
         self.color = color
         # Update visual appearance 
         self.color_panel.config(background=color)
+    
+    def get_color(self):
+        return self.color
 
 
 class ModificationFrame(tb.LabelFrame):
