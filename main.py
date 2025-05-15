@@ -1,39 +1,61 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, filedialog, ttk
+from tkinter import scrolledtext, messagebox, filedialog
+import ttkbootstrap as tb
 import re
 import json
 import os
+import pickle
 
-class InputFrame(tk.LabelFrame):
+# Paths for storing application settings
+APP_DATA_DIR = os.path.join(os.path.expanduser('~'), '.hex_manipulator')
+SETTINGS_FILE = os.path.join(APP_DATA_DIR, 'settings.pkl')
+
+# Ensure the data directory exists
+os.makedirs(APP_DATA_DIR, exist_ok=True)
+
+class InputFrame(tb.LabelFrame):
     """Frame for hex data input"""
     def __init__(self, parent, callback):
-        super().__init__(parent, text="Input Hex Data", padx=5, pady=5)
+        super().__init__(parent, text="Input Hex Data")
         self.callback = callback
         self.highlight_tag = "highlight"
-        self.selection_tag = "selection_highlight"  # New tag for selection highlights
+        self.selection_tag = "selection_highlight"
         
         # Import button
-        button_frame = tk.Frame(self)
+        button_frame = tb.Frame(self)
         button_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
-        import_btn = tk.Button(button_frame, text="Import Binary File", command=self.import_file)
+        import_btn = tb.Button(button_frame, text="Import Binary File", command=self.import_file)
         import_btn.pack(side=tk.LEFT, padx=5)
         
-        # Input text area
+        # Input text area with scrollbar
         self.text_input = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
         self.text_input.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.text_input.tag_configure(self.highlight_tag, background="#cc7000", foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
-        self.text_input.tag_configure(self.selection_tag, background="#4a6984", foreground="#ffffff")  # Configure the selection highlight tag
-        self.text_input.bind("<<Modified>>", self.on_input_change)
         
-        # Bind to selection events
-        self.text_input.bind("<ButtonRelease-1>", self.on_selection_change)  # Mouse button release
-        self.text_input.bind("<KeyRelease>", self.on_selection_change)      # Keyboard selection changes
+        # Configure tags for highlighting
+        self.text_input.tag_configure(self.highlight_tag, background="#cc7000", foreground="white", font=("TkDefaultFont", 10, "bold"))
+        self.text_input.tag_configure(self.selection_tag, background="#4a6984", foreground="white")
+        
+        self.text_input.bind("<<Modified>>", self.on_input_change)
+        self.text_input.bind("<ButtonRelease-1>", self.on_selection_change)
+        self.text_input.bind("<KeyRelease>", self.on_selection_change)
     
     def import_file(self):
         """Import and display binary file as hex"""
-        file_path = filedialog.askopenfilename(title="Select Binary File", filetypes=[("All Files", "*.*")])
+        # Use the binary files directory from settings
+        initial_dir = HexManipulator.app_settings.get('binary_dir', os.path.expanduser('~'))
+        
+        file_path = filedialog.askopenfilename(
+            title="Select Binary File", 
+            filetypes=[("All Files", "*.*")],
+            initialdir=initial_dir
+        )
+        
         if file_path:
             try:
+                # Update the binary directory in settings
+                HexManipulator.app_settings['binary_dir'] = os.path.dirname(file_path)
+                HexManipulator.save_settings()
+                
                 with open(file_path, 'rb') as file:
                     binary_data = file.read()
                 hex_str = ' '.join(f'{b:02X}' for b in binary_data)
@@ -133,54 +155,54 @@ class InputFrame(tk.LabelFrame):
                 self.text_input.tag_add(self.highlight_tag, start_index, end_index)
 
 
-class ModificationFrame(tk.LabelFrame):
+class ModificationFrame(tb.LabelFrame):
     """Frame for managing replacement rules"""
     def __init__(self, parent, update_callback):
-        super().__init__(parent, text="Replacement Rules", padx=5, pady=5)
+        super().__init__(parent, text="Replacement Rules")
         self.update_callback = update_callback
         self.replacement_rules = []
         
         # Add rule section
-        add_frame = tk.Frame(self)
+        add_frame = tb.Frame(self)
         add_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        tk.Label(add_frame, text="Pattern:").grid(row=0, column=0, padx=5, pady=5)
-        self.pattern_entry = tk.Entry(add_frame, width=20)
+        tb.Label(add_frame, text="Pattern:").grid(row=0, column=0, padx=5, pady=5)
+        self.pattern_entry = tb.Entry(add_frame, width=20)
         self.pattern_entry.grid(row=0, column=1, padx=5, pady=5)
         
-        tk.Label(add_frame, text="Replace with:").grid(row=0, column=2, padx=5, pady=5)
-        self.replace_entry = tk.Entry(add_frame, width=20)
+        tb.Label(add_frame, text="Replace with:").grid(row=0, column=2, padx=5, pady=5)
+        self.replace_entry = tb.Entry(add_frame, width=20)
         self.replace_entry.grid(row=0, column=3, padx=5, pady=5)
         
-        tk.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=0, column=4, padx=5, pady=5)
+        tb.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=0, column=4, padx=5, pady=5)
         
         # Save/Load buttons
-        button_frame = tk.Frame(self)
+        button_frame = tb.Frame(self)
         button_frame.pack(fill=tk.X, padx=5, pady=(0, 5))
         
-        tk.Button(button_frame, text="Save Rules", command=self.save_rules).pack(side=tk.LEFT, padx=5, pady=5)
-        tk.Button(button_frame, text="Load Rules", command=self.load_rules).pack(side=tk.LEFT, padx=5, pady=5)
+        tb.Button(button_frame, text="Save Rules", command=self.save_rules).pack(side=tk.LEFT, padx=5, pady=5)
+        tb.Button(button_frame, text="Load Rules", command=self.load_rules).pack(side=tk.LEFT, padx=5, pady=5)
         
         # Scrollable rules list
-        container = tk.Frame(self)
+        container = tb.Frame(self)
         container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        scrollbar = tk.Scrollbar(container)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.scrollbar = tb.Scrollbar(container)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         
         self.canvas = tk.Canvas(container)
         self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        scrollbar.config(command=self.canvas.yview)
-        self.canvas.config(yscrollcommand=scrollbar.set)
+        self.scrollbar.config(command=self.canvas.yview)
+        self.canvas.config(yscrollcommand=self.scrollbar.set)
         
-        self.rules_list_frame = tk.Frame(self.canvas)
+        self.rules_list_frame = tb.Frame(self.canvas)
         self.canvas_window = self.canvas.create_window((0, 0), window=self.rules_list_frame, anchor="nw")
         
         self.rules_list_frame.bind("<Configure>", self.on_frame_configure)
         self.canvas.bind("<Configure>", self.on_canvas_configure)
         
-        tk.Label(self.rules_list_frame, text="").pack()
+        tb.Label(self.rules_list_frame, text="").pack()
     
     def save_rules(self):
         """Save rules to JSON file"""
@@ -188,14 +210,22 @@ class ModificationFrame(tk.LabelFrame):
             messagebox.showwarning("Warning", "No rules to save")
             return
             
+        # Use the rules directory from settings
+        initial_dir = HexManipulator.app_settings.get('rules_dir', os.path.expanduser('~'))
+        
         file_path = filedialog.asksaveasfilename(
             title="Save Replacement Rules",
             defaultextension=".json",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            initialdir=initial_dir
         )
         
         if file_path:
             try:
+                # Update the rules directory in settings
+                HexManipulator.app_settings['rules_dir'] = os.path.dirname(file_path)
+                HexManipulator.save_settings()
+                
                 with open(file_path, 'w') as file:
                     json.dump(self.replacement_rules, file, indent=2)
                 messagebox.showinfo("Save Successful", f"Rules saved to {os.path.basename(file_path)}")
@@ -204,13 +234,21 @@ class ModificationFrame(tk.LabelFrame):
     
     def load_rules(self):
         """Load rules from JSON file"""
+        # Use the rules directory from settings
+        initial_dir = HexManipulator.app_settings.get('rules_dir', os.path.expanduser('~'))
+        
         file_path = filedialog.askopenfilename(
             title="Load Replacement Rules",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")],
+            initialdir=initial_dir
         )
         
         if file_path:
             try:
+                # Update the rules directory in settings
+                HexManipulator.app_settings['rules_dir'] = os.path.dirname(file_path)
+                HexManipulator.save_settings()
+                
                 with open(file_path, 'r') as file:
                     rules = json.load(file)
                     
@@ -253,18 +291,18 @@ class ModificationFrame(tk.LabelFrame):
             widget.destroy()
         
         for idx, (pattern, replacement) in enumerate(self.replacement_rules):
-            rule_frame = tk.Frame(self.rules_list_frame, relief=tk.GROOVE, bd=1)
+            rule_frame = tb.Frame(self.rules_list_frame)
             rule_frame.pack(fill=tk.X, padx=5, pady=2)
             
-            tk.Label(rule_frame, text=f"{idx+1}.", width=3).pack(side=tk.LEFT, padx=5, pady=5)
-            tk.Label(rule_frame, text=f"Pattern: {pattern}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
-            tk.Label(rule_frame, text=f"→ {replacement}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
+            tb.Label(rule_frame, text=f"{idx+1}.", width=3).pack(side=tk.LEFT, padx=5, pady=5)
+            tb.Label(rule_frame, text=f"Pattern: {pattern}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
+            tb.Label(rule_frame, text=f"→ {replacement}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
             
-            tk.Button(rule_frame, text="Edit", command=lambda i=idx: self.edit_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
-            tk.Button(rule_frame, text="X", fg="red", command=lambda i=idx: self.delete_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
+            tb.Button(rule_frame, text="Edit", command=lambda i=idx: self.edit_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
+            tb.Button(rule_frame, text="X", command=lambda i=idx: self.delete_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
         
         if not self.replacement_rules:
-            tk.Label(self.rules_list_frame, text="").pack()
+            tb.Label(self.rules_list_frame, text="").pack()
             
         self.on_frame_configure(None)
     
@@ -272,20 +310,20 @@ class ModificationFrame(tk.LabelFrame):
         """Edit an existing rule"""
         pattern, replacement = self.replacement_rules[idx]
         
-        edit_dialog = tk.Toplevel(self)
+        edit_dialog = tb.Toplevel(self)
         edit_dialog.title("Edit Rule")
         edit_dialog.geometry("400x120")
         edit_dialog.resizable(False, False)
         edit_dialog.transient(self)
         edit_dialog.grab_set()
         
-        tk.Label(edit_dialog, text="Pattern:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
-        pattern_entry = tk.Entry(edit_dialog, width=25)
+        tb.Label(edit_dialog, text="Pattern:").grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        pattern_entry = tb.Entry(edit_dialog, width=25)
         pattern_entry.grid(row=0, column=1, padx=10, pady=10)
         pattern_entry.insert(0, pattern)
         
-        tk.Label(edit_dialog, text="Replace with:").grid(row=1, column=0, padx=10, pady=10, sticky="w")
-        replace_entry = tk.Entry(edit_dialog, width=25)
+        tb.Label(edit_dialog, text="Replace with:").grid(row=1, column=0, padx=10, pady=10, sticky="w")
+        replace_entry = tb.Entry(edit_dialog, width=25)
         replace_entry.grid(row=1, column=1, padx=10, pady=10)
         replace_entry.insert(0, replacement)
         
@@ -301,7 +339,7 @@ class ModificationFrame(tk.LabelFrame):
             else:
                 messagebox.showwarning("Warning", "Both pattern and replacement must be provided")
         
-        tk.Button(edit_dialog, text="Save", command=save_changes).grid(row=2, column=0, columnspan=2, pady=10)
+        tb.Button(edit_dialog, text="Save", command=save_changes).grid(row=2, column=0, columnspan=2, pady=10)
     
     def delete_rule(self, idx):
         del self.replacement_rules[idx]
@@ -312,17 +350,18 @@ class ModificationFrame(tk.LabelFrame):
         return self.replacement_rules
 
 
-class OutputFrame(tk.LabelFrame):
+class OutputFrame(tb.LabelFrame):
     """Frame for displaying transformed output"""
     def __init__(self, parent):
-        super().__init__(parent, text="Transformed Output", padx=5, pady=5)
+        super().__init__(parent, text="Transformed Output")
         self.highlight_tag = "highlight"
         
         self.text_output = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
         self.text_output.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.text_output.config(state=tk.DISABLED)
         
-        self.text_output.tag_configure(self.highlight_tag, background="#cc7000", foreground="#ffffff", font=("TkDefaultFont", 10, "bold"))
+        # Configure tag for highlighting
+        self.text_output.tag_configure(self.highlight_tag, background="#cc7000", foreground="white", font=("TkDefaultFont", 10, "bold"))
     
     def set_output(self, text, replacements=None):
         """Set output text with optional highlighting"""
@@ -380,78 +419,78 @@ class HexProcessor:
     
     def _process_escape_sequences(self, text):
         """Process escape sequences in replacement text"""
-        # Fix: Use raw strings for escape sequences so they're interpreted correctly
         result = text
-        # Double backslash to ensure correct parsing
-        result = result.replace('\\n', '\n')  # Now actually creates a newline
+        result = result.replace('\\n', '\n')  # Newline
         result = result.replace('\\t', '\t')  # Tab character
         result = result.replace('\\r', '\r')  # Carriage return
             
         return result
 
 
-class HexManipulator(tk.Tk):
+class HexManipulator(tb.Window):
     """Main application window"""
+    # Class variable to store app settings
+    app_settings = {
+        'window_geometry': '',
+        'window_is_maximized': False,
+        'pane_positions': [],
+        'binary_dir': os.path.expanduser('~'),
+        'rules_dir': os.path.expanduser('~')
+    }
+    
+    @classmethod
+    def load_settings(cls):
+        """Load application settings from file"""
+        try:
+            if os.path.exists(SETTINGS_FILE):
+                with open(SETTINGS_FILE, 'rb') as f:
+                    cls.app_settings = pickle.load(f)
+        except Exception as e:
+            print(f"Error loading settings: {str(e)}")
+    
+    @classmethod
+    def save_settings(cls):
+        """Save application settings to file"""
+        try:
+            with open(SETTINGS_FILE, 'wb') as f:
+                pickle.dump(cls.app_settings, f)
+        except Exception as e:
+            print(f"Error saving settings: {str(e)}")
+    
     def __init__(self):
-        super().__init__()
+        # Load settings before initializing the window
+        self.load_settings()
+        
+        # Initialize the window with ttkbootstrap
+        super().__init__(themename="darkly")
         self.title("Hex Data Manipulator")
         
-        # Set window size
-        try:
-            self.state('zoomed')  # Windows
-        except:
+        # Apply saved window state or default to maximized
+        if self.app_settings.get('window_is_maximized', True):
+            self.state('zoomed')  # Windows maximized state
+        elif self.app_settings.get('window_geometry'):
             try:
-                self.attributes('-zoomed', True)  # Linux
+                self.geometry(self.app_settings['window_geometry'])
             except:
-                self.geometry(f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}")
-        
-        # Set theme colors
-        self.bg_color = "#2b2b2b"
-        self.fg_color = "#e0e0e0"
-        self.text_bg = "#383838"
-        self.text_fg = "#e0e0e0"
-        self.button_bg = "#404040"
-        self.button_fg = "#e0e0e0"
-        self.highlight_bg = "#505050"
-        self.frame_bg = "#333333"
-        self.entry_bg = "#383838"
-        self.entry_fg = "#e0e0e0"
-        
-        self.configure(bg=self.bg_color)
-        self.apply_theme()
+                # Fallback if saved geometry is invalid
+                self.geometry('800x600')
+        else:
+            # Default size
+            self.geometry('800x600')
         
         self.processor = HexProcessor()
         self.create_ui()
-    
-    def apply_theme(self):
-        """Apply dark theme to the application"""
-        # Configure styles
-        style = ttk.Style()
-        style.configure('TLabel', background=self.bg_color, foreground=self.fg_color)
-        style.configure('TButton', background=self.button_bg, foreground=self.button_fg)
-        style.configure('TFrame', background=self.bg_color)
         
-        # Apply theme to Tk widgets
-        self.option_add("*Background", self.bg_color)
-        self.option_add("*Foreground", self.fg_color)
-        self.option_add("*Button.Background", self.button_bg)
-        self.option_add("*Button.Foreground", self.button_fg)
-        self.option_add("*Text.Background", self.text_bg)
-        self.option_add("*Text.Foreground", self.text_fg)
-        self.option_add("*Entry.Background", self.entry_bg)
-        self.option_add("*Entry.Foreground", self.entry_fg)
+        # Save settings when closing the window
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
     
     def create_ui(self):
         """Create the application UI"""
-        main_frame = tk.Frame(self, bg=self.bg_color)
+        main_frame = tb.Frame(self)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
         # Create resizable paned window
-        self.paned_window = tk.PanedWindow(main_frame, orient=tk.VERTICAL, 
-                                         bg=self.bg_color, 
-                                         sashwidth=5, 
-                                         sashrelief=tk.RAISED,
-                                         sashpad=2)
+        self.paned_window = tk.PanedWindow(main_frame, orient=tk.VERTICAL)
         self.paned_window.pack(fill=tk.BOTH, expand=True)
         
         # Create and add frames
@@ -463,33 +502,15 @@ class HexManipulator(tk.Tk):
         self.paned_window.add(self.modification_frame, stretch="always", minsize=200)
         self.paned_window.add(self.output_frame, stretch="always", minsize=150)
         
-        # Apply theme recursively
-        self.apply_theme_to_widget(main_frame)
-    
-    def apply_theme_to_widget(self, widget):
-        """Apply theme to widget and its children"""
-        widget_class = widget.winfo_class()
-        
-        if widget_class in ('Frame', 'Labelframe', 'TFrame'):
-            widget.configure(bg=self.frame_bg)
-        elif widget_class == 'Label':
-            widget.configure(bg=self.frame_bg, fg=self.fg_color)
-        elif widget_class == 'Button':
-            widget.configure(bg=self.button_bg, fg=self.button_fg, 
-                           activebackground=self.highlight_bg, activeforeground=self.fg_color)
-        elif widget_class in ('Entry', 'TEntry'):
-            widget.configure(bg=self.entry_bg, fg=self.entry_fg, insertbackground=self.fg_color)
-        elif widget_class in ('Text', 'ScrolledText'):
-            widget.configure(bg=self.text_bg, fg=self.text_fg, 
-                           insertbackground=self.fg_color, selectbackground="#4a6984")
-        elif widget_class == 'Canvas':
-            widget.configure(bg=self.frame_bg, highlightbackground=self.frame_bg)
-        elif widget_class == 'PanedWindow':
-            widget.configure(bg=self.highlight_bg)
-        
-        # Apply to children
-        for child in widget.winfo_children():
-            self.apply_theme_to_widget(child)
+        # Restore pane positions if available
+        if self.app_settings.get('pane_positions') and len(self.app_settings['pane_positions']) == 2:
+            try:
+                positions = self.app_settings['pane_positions']
+                self.update_idletasks()  # Ensure UI is rendered before setting positions
+                self.paned_window.sash_place(0, 0, positions[0])
+                self.paned_window.sash_place(1, 0, positions[1])
+            except Exception as e:
+                print(f"Error restoring pane positions: {str(e)}")
     
     def update_output(self):
         """Process input and update output when changes occur"""
@@ -506,6 +527,28 @@ class HexManipulator(tk.Tk):
             self.output_frame.set_output(processed_text, replacement_rules)
         else:
             self.output_frame.set_output("", None)
+    
+    def on_closing(self):
+        """Save settings and close the application"""
+        # Save window state
+        self.app_settings['window_is_maximized'] = (self.state() == 'zoomed')
+        
+        # If not maximized, save the window geometry
+        if not self.app_settings['window_is_maximized']:
+            self.app_settings['window_geometry'] = self.geometry()
+        
+        # Save pane positions
+        try:
+            positions = [self.paned_window.sash_coord(i)[1] for i in range(self.paned_window.sash_number())]
+            self.app_settings['pane_positions'] = positions
+        except:
+            pass
+        
+        # Save all settings
+        self.save_settings()
+        
+        # Close the window
+        self.destroy()
 
 
 if __name__ == "__main__":
