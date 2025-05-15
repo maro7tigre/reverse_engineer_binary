@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import scrolledtext, messagebox, filedialog
+from tkinter import scrolledtext, messagebox, filedialog, colorchooser
 import ttkbootstrap as tb
 import re
 import json
@@ -21,11 +21,15 @@ class InputFrame(tb.LabelFrame):
         self.highlight_tag = "highlight"
         self.selection_tag = "selection_highlight"
         
-        # Import button
+        # Import button and occurrence counter
         button_frame = tb.Frame(self)
         button_frame.pack(fill=tk.X, padx=5, pady=(5, 0))
         import_btn = tb.Button(button_frame, text="Import Binary File", command=self.import_file)
         import_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Add occurrence counter label
+        self.occurrence_label = tb.Label(button_frame, text="Occurrences: 0")
+        self.occurrence_label.pack(side=tk.RIGHT, padx=5)
         
         # Input text area with scrollbar
         self.text_input = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
@@ -83,18 +87,26 @@ class InputFrame(tb.LabelFrame):
                 
                 # Only proceed if we have meaningful selection
                 if selected_text and len(selected_text.strip()) > 0:
-                    self.highlight_selection(selected_text)
+                    occurrence_count = self.highlight_selection(selected_text)
+                    self.occurrence_label.config(text=f"Occurrences: {occurrence_count}")
+                else:
+                    self.occurrence_label.config(text="Occurrences: 0")
+            else:
+                self.occurrence_label.config(text="Occurrences: 0")
         except tk.TclError:
             # No selection exists
-            pass
+            self.occurrence_label.config(text="Occurrences: 0")
     
     def highlight_selection(self, text_to_highlight):
-        """Highlight all occurrences of the selected text"""
+        """Highlight all occurrences of the selected text and return count"""
         if not text_to_highlight or text_to_highlight.isspace():
-            return
+            return 0
         
         # Escape special regex characters
         escaped_text = re.escape(text_to_highlight)
+        
+        # Count for occurrences
+        occurrence_count = 0
         
         # Highlight all occurrences
         start_idx = "1.0"
@@ -113,15 +125,21 @@ class InputFrame(tb.LabelFrame):
                    start_idx == self.text_input.index(tk.SEL_FIRST) and 
                    end_idx == self.text_input.index(tk.SEL_LAST)):
                 self.text_input.tag_add(self.selection_tag, start_idx, end_idx)
+                occurrence_count += 1
             
             start_idx = end_idx
+        
+        return occurrence_count
     
     def get_input(self):
         return self.text_input.get("1.0", tk.END).strip()
     
-    def highlight_patterns(self, patterns):
-        """Highlight matching patterns in input text"""
-        self.text_input.tag_remove(self.highlight_tag, "1.0", tk.END)
+    def highlight_patterns(self, patterns, colors=None):
+        """Highlight matching patterns in input text with custom colors"""
+        # Clear all previous highlight tags
+        for tag in self.text_input.tag_names():
+            if tag.startswith("color_") or tag == self.highlight_tag:
+                self.text_input.tag_remove(tag, "1.0", tk.END)
         
         input_text = self.get_input()
         if not input_text or not patterns:
@@ -129,10 +147,23 @@ class InputFrame(tb.LabelFrame):
         
         content = self.text_input.get("1.0", tk.END)
         
-        for pattern in patterns:
+        for i, pattern in enumerate(patterns):
             clean_pattern = ' '.join(pattern.split())
             pattern_parts = clean_pattern.split()
             regex_pattern = r'\s*'.join([re.escape(part) for part in pattern_parts])
+            
+            # Get color for this pattern
+            color = "#cc7000"  # Default color
+            if colors and i < len(colors) and colors[i]:
+                color = colors[i]
+            
+            # Create a unique tag for this color if it doesn't exist
+            tag_name = f"color_{i}"
+            if tag_name not in self.text_input.tag_names():
+                self.text_input.tag_configure(tag_name, background=color, foreground="white", font=("TkDefaultFont", 10, "bold"))
+            else:
+                # Update existing tag's color
+                self.text_input.tag_configure(tag_name, background=color)
             
             for match in re.finditer(regex_pattern, content):
                 start_pos = match.start()
@@ -152,7 +183,41 @@ class InputFrame(tb.LabelFrame):
                 # Apply tag
                 start_index = f"{start_line}.{start_char}"
                 end_index = f"{end_line}.{end_char}"
-                self.text_input.tag_add(self.highlight_tag, start_index, end_index)
+                self.text_input.tag_add(tag_name, start_index, end_index)
+
+
+class ColorSquare(tk.Frame):
+    """Custom widget for a clickable color square"""
+    def __init__(self, parent, color="#cc7000", size=24, command=None):
+        super().__init__(parent, width=size, height=size, bd=1, relief=tk.SUNKEN)
+        self.color = color
+        self.command = command
+        self.size = size
+        
+        # Ensure the frame stays the specified size
+        self.grid_propagate(False)
+        self.pack_propagate(False)
+        
+        # Force tk to use our background color, not ttk theme
+        self.config(background="white")
+        
+        # Create the color panel - ensure it gets a specific background color
+        self.color_panel = tk.Label(self, background=color)
+        self.color_panel.pack(fill=tk.BOTH, expand=True)
+        
+        # Bind click event
+        self.color_panel.bind("<Button-1>", self._on_click)
+        self.bind("<Button-1>", self._on_click)
+    
+    def _on_click(self, event):
+        if self.command:
+            self.command()
+    
+    def set_color(self, color):
+        # Update stored color
+        self.color = color
+        # Update visual appearance 
+        self.color_panel.config(background=color)
 
 
 class ModificationFrame(tb.LabelFrame):
@@ -161,6 +226,8 @@ class ModificationFrame(tb.LabelFrame):
         super().__init__(parent, text="Replacement Rules")
         self.update_callback = update_callback
         self.replacement_rules = []
+        self.rule_colors = []  # Store colors for each rule
+        self.DEFAULT_COLOR = "#cc7000"  # Orange default color
         
         # Add rule section
         add_frame = tb.Frame(self)
@@ -174,7 +241,13 @@ class ModificationFrame(tb.LabelFrame):
         self.replace_entry = tb.Entry(add_frame, width=20)
         self.replace_entry.grid(row=0, column=3, padx=5, pady=5)
         
-        tb.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=0, column=4, padx=5, pady=5)
+        # Color selector for new rules - explicitly set to orange
+        self.color_selector = ColorSquare(add_frame, color=self.DEFAULT_COLOR, command=self.select_color)
+        self.color_selector.grid(row=0, column=4, padx=5, pady=5)
+        self.color_selector.set_color(self.DEFAULT_COLOR)  # Ensure color is set
+        
+        # Add rule button
+        tb.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=0, column=5, padx=5, pady=5)
         
         # Save/Load buttons
         button_frame = tb.Frame(self)
@@ -202,10 +275,19 @@ class ModificationFrame(tb.LabelFrame):
         self.rules_list_frame.bind("<Configure>", self.on_frame_configure)
         self.canvas.bind("<Configure>", self.on_canvas_configure)
         
+        # Initial empty label to ensure proper layout
         tb.Label(self.rules_list_frame, text="").pack()
     
+    def select_color(self):
+        """Open color chooser dialog and update color selector"""
+        current_color = self.color_selector.get_color()
+        color_result = colorchooser.askcolor(initialcolor=current_color)
+        
+        if color_result and color_result[1]:  # color_result[1] is the hex string
+            self.color_selector.set_color(color_result[1])
+    
     def save_rules(self):
-        """Save rules to JSON file"""
+        """Save rules to JSON file with color information"""
         if not self.replacement_rules:
             messagebox.showwarning("Warning", "No rules to save")
             return
@@ -226,14 +308,24 @@ class ModificationFrame(tb.LabelFrame):
                 HexManipulator.app_settings['rules_dir'] = os.path.dirname(file_path)
                 HexManipulator.save_settings()
                 
+                # Create a list of rules with their colors
+                rules_with_colors = []
+                for i, rule in enumerate(self.replacement_rules):
+                    color = self.rule_colors[i] if i < len(self.rule_colors) else self.DEFAULT_COLOR
+                    rules_with_colors.append({
+                        "pattern": rule[0],
+                        "replacement": rule[1],
+                        "color": color
+                    })
+                
                 with open(file_path, 'w') as file:
-                    json.dump(self.replacement_rules, file, indent=2)
+                    json.dump(rules_with_colors, file, indent=2)
                 messagebox.showinfo("Save Successful", f"Rules saved to {os.path.basename(file_path)}")
             except Exception as e:
                 messagebox.showerror("Save Error", f"Error saving rules: {str(e)}")
     
     def load_rules(self):
-        """Load rules from JSON file"""
+        """Load rules from JSON file with color information"""
         # Use the rules directory from settings
         initial_dir = HexManipulator.app_settings.get('rules_dir', os.path.expanduser('~'))
         
@@ -250,16 +342,29 @@ class ModificationFrame(tb.LabelFrame):
                 HexManipulator.save_settings()
                 
                 with open(file_path, 'r') as file:
-                    rules = json.load(file)
+                    data = json.load(file)
                     
-                if not isinstance(rules, list):
+                self.replacement_rules = []
+                self.rule_colors = []
+                
+                # Handle both old and new format
+                if isinstance(data, list):
+                    if all(isinstance(item, list) for item in data):
+                        # Old format without colors
+                        self.replacement_rules = data
+                        self.rule_colors = [self.DEFAULT_COLOR] * len(data)  # Default color for all
+                    else:
+                        # New format with colors
+                        for rule_data in data:
+                            if isinstance(rule_data, dict) and "pattern" in rule_data and "replacement" in rule_data:
+                                self.replacement_rules.append([rule_data["pattern"], rule_data["replacement"]])
+                                # Use default color if not specified
+                                self.rule_colors.append(rule_data.get("color", self.DEFAULT_COLOR))
+                            else:
+                                raise ValueError("Invalid rule format")
+                else:
                     raise ValueError("Invalid rule format")
-                    
-                for rule in rules:
-                    if not isinstance(rule, list) or len(rule) != 2:
-                        raise ValueError("Invalid rule format")
                         
-                self.replacement_rules = rules
                 self.update_rules_display()
                 self.update_callback()
                 messagebox.showinfo("Load Successful", f"Rules loaded from {os.path.basename(file_path)}")
@@ -278,25 +383,56 @@ class ModificationFrame(tb.LabelFrame):
         
         if pattern and replacement:
             self.replacement_rules.append([pattern, replacement])
+            # Get the current color from the color selector
+            self.rule_colors.append(self.color_selector.get_color())
             self.update_rules_display()
             self.pattern_entry.delete(0, tk.END)
             self.replace_entry.delete(0, tk.END)
+            # Keep the color selector's color for the next rule
             self.update_callback()
         else:
             messagebox.showwarning("Warning", "Both pattern and replacement must be provided")
     
     def update_rules_display(self):
         """Update the visual display of all rules"""
+        # Clear all existing widgets
         for widget in self.rules_list_frame.winfo_children():
             widget.destroy()
+        
+        # Create a dictionary to store color square widgets
+        self.color_squares = {}
         
         for idx, (pattern, replacement) in enumerate(self.replacement_rules):
             rule_frame = tb.Frame(self.rules_list_frame)
             rule_frame.pack(fill=tk.X, padx=5, pady=2)
             
+            # Get color for this rule - ensure default orange for any without a color
+            color = self.DEFAULT_COLOR  # Default orange
+            if idx < len(self.rule_colors) and self.rule_colors[idx]:
+                color = self.rule_colors[idx]
+            else:
+                # If this rule doesn't have a color, add the default
+                if idx >= len(self.rule_colors):
+                    self.rule_colors.append(self.DEFAULT_COLOR)
+                elif not self.rule_colors[idx]:
+                    self.rule_colors[idx] = self.DEFAULT_COLOR
+                color = self.DEFAULT_COLOR
+            
             tb.Label(rule_frame, text=f"{idx+1}.", width=3).pack(side=tk.LEFT, padx=5, pady=5)
             tb.Label(rule_frame, text=f"Pattern: {pattern}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
             tb.Label(rule_frame, text=f"→ {replacement}", width=20, anchor="w").pack(side=tk.LEFT, padx=5, pady=5)
+            
+            # Create color square for this rule with explicit background
+            def make_color_command(rule_idx):
+                return lambda: self.edit_color(rule_idx)
+            
+            # Create a new color square widget and explicitly set its color
+            color_square = ColorSquare(rule_frame, color=color, command=make_color_command(idx))
+            color_square.set_color(color)  # Explicitly call set_color with the current color
+            color_square.pack(side=tk.LEFT, padx=5, pady=5)
+            
+            # Store reference to this color square
+            self.color_squares[idx] = color_square
             
             tb.Button(rule_frame, text="Edit", command=lambda i=idx: self.edit_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
             tb.Button(rule_frame, text="X", command=lambda i=idx: self.delete_rule(i)).pack(side=tk.LEFT, padx=5, pady=5)
@@ -305,6 +441,34 @@ class ModificationFrame(tb.LabelFrame):
             tb.Label(self.rules_list_frame, text="").pack()
             
         self.on_frame_configure(None)
+    
+    def edit_color(self, idx):
+        """Edit color for a rule"""
+        # Get current color
+        current_color = self.rule_colors[idx] if idx < len(self.rule_colors) else self.DEFAULT_COLOR
+        
+        # Open color chooser
+        color_result = colorchooser.askcolor(initialcolor=current_color)
+        
+        if color_result and color_result[1]:  # color_result[1] is the hex string
+            new_color = color_result[1]
+            
+            # Update the color in our list
+            if idx < len(self.rule_colors):
+                self.rule_colors[idx] = new_color
+            else:
+                # Extend the colors list if needed
+                while len(self.rule_colors) <= idx:
+                    self.rule_colors.append(self.DEFAULT_COLOR)
+                self.rule_colors[idx] = new_color
+            
+            # If we have a reference to the color square, update it directly
+            if hasattr(self, 'color_squares') and idx in self.color_squares:
+                self.color_squares[idx].set_color(new_color)
+            
+            # Update display and highlights
+            self.update_rules_display()
+            self.update_callback()
     
     def edit_rule(self, idx):
         """Edit an existing rule"""
@@ -342,49 +506,75 @@ class ModificationFrame(tb.LabelFrame):
         tb.Button(edit_dialog, text="Save", command=save_changes).grid(row=2, column=0, columnspan=2, pady=10)
     
     def delete_rule(self, idx):
+        """Delete a rule and its associated color"""
         del self.replacement_rules[idx]
+        
+        # Delete the color if it exists
+        if idx < len(self.rule_colors):
+            del self.rule_colors[idx]
+            
         self.update_rules_display()
         self.update_callback()
     
     def get_rules(self):
         return self.replacement_rules
+    
+    def get_colors(self):
+        # Ensure we have colors for all rules
+        while len(self.rule_colors) < len(self.replacement_rules):
+            self.rule_colors.append(self.DEFAULT_COLOR)
+        return self.rule_colors
 
 
 class OutputFrame(tb.LabelFrame):
     """Frame for displaying transformed output"""
     def __init__(self, parent):
         super().__init__(parent, text="Transformed Output")
-        self.highlight_tag = "highlight"
+        self.DEFAULT_COLOR = "#cc7000"  # Default highlighting color
         
         self.text_output = scrolledtext.ScrolledText(self, height=8, wrap=tk.WORD)
         self.text_output.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         self.text_output.config(state=tk.DISABLED)
-        
-        # Configure tag for highlighting
-        self.text_output.tag_configure(self.highlight_tag, background="#cc7000", foreground="white", font=("TkDefaultFont", 10, "bold"))
     
-    def set_output(self, text, replacements=None):
-        """Set output text with optional highlighting"""
+    def set_output(self, text, replacements=None, colors=None):
+        """Set output text with optional highlighting using custom colors"""
         self.text_output.config(state=tk.NORMAL)
         self.text_output.delete("1.0", tk.END)
         self.text_output.insert("1.0", text)
         
+        # Remove any existing highlight tags
+        for tag in self.text_output.tag_names():
+            if tag.startswith("output_color_"):
+                self.text_output.tag_remove(tag, "1.0", tk.END)
+        
         if replacements:
-            for _, replacement in replacements:
+            for i, (_, replacement) in enumerate(replacements):
+                # Get color for this replacement
+                color = self.DEFAULT_COLOR
+                if colors and i < len(colors) and colors[i]:
+                    color = colors[i]
+                
+                # Create or update tag for this color
+                tag_name = f"output_color_{i}"
+                if tag_name not in self.text_output.tag_names():
+                    self.text_output.tag_configure(tag_name, background=color, foreground="white", font=("TkDefaultFont", 10, "bold"))
+                else:
+                    self.text_output.tag_configure(tag_name, background=color)
+                
                 # Skip highlighting escape sequences
                 if '\\n' not in replacement and '\\t' not in replacement and '\\r' not in replacement:
-                    self.highlight_text(replacement)
+                    self.highlight_text(replacement, tag_name)
                 else:
                     # Highlight non-escape parts
                     parts = re.split(r'(\\n|\\t|\\r)', replacement)
                     for part in parts:
                         if part and part not in ['\\n', '\\t', '\\r']:
-                            self.highlight_text(part)
+                            self.highlight_text(part, tag_name)
                 
         self.text_output.config(state=tk.DISABLED)
     
-    def highlight_text(self, text_to_highlight):
-        """Highlight all occurrences of text"""
+    def highlight_text(self, text_to_highlight, tag_name):
+        """Highlight all occurrences of text with specified tag"""
         if not text_to_highlight or text_to_highlight.isspace():
             return
             
@@ -396,7 +586,7 @@ class OutputFrame(tb.LabelFrame):
                 break
                 
             end_idx = f"{start_idx}+{len(text_to_highlight)}c"
-            self.text_output.tag_add(self.highlight_tag, start_idx, end_idx)
+            self.text_output.tag_add(tag_name, start_idx, end_idx)
             start_idx = end_idx
 
 
@@ -516,15 +706,16 @@ class HexManipulator(tb.Window):
         """Process input and update output when changes occur"""
         input_text = self.input_frame.get_input()
         replacement_rules = self.modification_frame.get_rules()
+        rule_colors = self.modification_frame.get_colors()
         
         # Highlight patterns in input
         if replacement_rules:
             patterns = [pattern for pattern, _ in replacement_rules]
-            self.input_frame.highlight_patterns(patterns)
+            self.input_frame.highlight_patterns(patterns, rule_colors)
         
         if input_text:
             processed_text = self.processor.process_hex_data(input_text, replacement_rules)
-            self.output_frame.set_output(processed_text, replacement_rules)
+            self.output_frame.set_output(processed_text, replacement_rules, rule_colors)
         else:
             self.output_frame.set_output("", None)
     
