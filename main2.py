@@ -13,62 +13,37 @@ SETTINGS_FILE = os.path.join(APP_DATA_DIR, 'settings.pkl')
 # Ensure the data directory exists
 os.makedirs(APP_DATA_DIR, exist_ok=True)
 
-class SimplePatternRule:
-    """Represents a pattern rule with visual template and location selection"""
-    def __init__(self, pattern_template, replacement, priority=0, 
-                 location_enabled=False, selected_part_index=0, color="#cc7000"):
-        self.pattern_template = pattern_template  # "## 2A ##"
-        self.replacement = replacement
-        self.priority = priority
-        self.location_enabled = location_enabled
-        self.selected_part_index = selected_part_index  # Which ## is selected
-        self.color = color
+class PatternMatch:
+    """Represents a single pattern match with its wildcards and position"""
+    def __init__(self, start_pos, end_pos, wildcards, rule):
+        self.start_pos = start_pos
+        self.end_pos = end_pos
+        self.wildcards = wildcards  # List of captured wildcard values
+        self.rule = rule
+        self.location_wildcard_index = rule.selected_part_index if rule.location_enabled else None
         
-    def to_regex(self):
-        """Convert template like '## 2A ##' to regex pattern"""
-        parts = self.pattern_template.split()
-        regex_parts = []
-        
-        for part in parts:
-            if part == "##":
-                regex_parts.append(r"(\w{2})")  # Capture group for wildcards
-            else:
-                regex_parts.append(re.escape(part))
-                
-        return r"\s+".join(regex_parts)
-    
-    def get_location_capture_group(self):
-        """Returns which regex capture group corresponds to selected location part"""
-        if not self.location_enabled:
-            return None
-            
-        wildcard_count = 0
-        for part in self.pattern_template.split():
-            if part == "##":
-                if wildcard_count == self.selected_part_index:
-                    return wildcard_count + 1  # Regex groups are 1-indexed
-                wildcard_count += 1
+    def get_location_value(self):
+        """Get the wildcard value designated as the location"""
+        if self.location_wildcard_index is not None and self.location_wildcard_index < len(self.wildcards):
+            return self.wildcards[self.location_wildcard_index].upper()
         return None
     
-    def get_wildcard_count(self):
-        """Count number of ## wildcards in template"""
-        return self.pattern_template.count("##")
-    
-    def process_replacement(self, match_groups):
-        """Process replacement template with captured groups and arithmetic"""
-        result = self.replacement
+    def apply_replacement_template(self):
+        """Apply the rule's replacement template using wildcards"""
+        result = self.rule.replacement
         
-        # Handle arithmetic operations
-        for i, group_value in enumerate(match_groups):
-            group_num = i + 1
+        # Replace wildcard references (#1, #2, etc.)
+        for i, wildcard_value in enumerate(self.wildcards):
+            wildcard_ref = f"#{i+1}"
+            result = result.replace(wildcard_ref, wildcard_value)
             
             # Handle hex to decimal conversion with arithmetic
-            hex_dec_pattern = rf"\{{hex_to_dec\(\${group_num}\)([+\-*/]\d+)?\}}"
+            hex_dec_pattern = rf"\{{hex_to_dec\(#{i+1}\)([+\-*/]\d+)?\}}"
             matches = re.findall(hex_dec_pattern, result)
             
             for operation in matches:
                 try:
-                    decimal_value = int(group_value, 16)
+                    decimal_value = int(wildcard_value, 16)
                     if operation:
                         if operation.startswith('+'):
                             decimal_value += int(operation[1:])
@@ -79,16 +54,59 @@ class SimplePatternRule:
                         elif operation.startswith('/'):
                             decimal_value //= int(operation[1:])
                     
-                    full_pattern = f"{{hex_to_dec(${group_num}){operation}}}"
+                    full_pattern = f"{{hex_to_dec(#{i+1}){operation}}}"
                     result = result.replace(full_pattern, str(decimal_value))
                 except ValueError:
-                    # If conversion fails, leave as is
                     pass
-            
-            # Handle basic substitutions
-            result = result.replace(f"${group_num}", group_value)
         
         return result
+
+
+class SimplePatternRule:
+    """Represents a pattern rule with visual template and location selection"""
+    def __init__(self, pattern_template, replacement, priority=0, 
+                 location_enabled=False, selected_part_index=0, color="#cc7000"):
+        self.pattern_template = pattern_template  # "## 2A ##"
+        self.replacement = replacement
+        self.priority = priority
+        self.location_enabled = location_enabled
+        self.selected_part_index = selected_part_index  # Which ## is selected for location
+        self.color = color
+        
+    def to_regex(self):
+        """Convert template like '## 2A ##' to regex pattern"""
+        parts = self.pattern_template.split()
+        regex_parts = []
+        
+        for part in parts:
+            if part == "##":
+                regex_parts.append(r"([0-9A-Fa-f]{2})")  # Capture group for wildcards
+            else:
+                regex_parts.append(re.escape(part))
+                
+        return r"\s+".join(regex_parts)
+    
+    def get_wildcard_count(self):
+        """Count number of ## wildcards in template"""
+        return self.pattern_template.count("##")
+    
+    def find_matches(self, text):
+        """Find all matches of this pattern in the text"""
+        matches = []
+        try:
+            regex_pattern = self.to_regex()
+            for match in re.finditer(regex_pattern, text, flags=re.IGNORECASE):
+                pattern_match = PatternMatch(
+                    start_pos=match.start(),
+                    end_pos=match.end(),
+                    wildcards=list(match.groups()),
+                    rule=self
+                )
+                matches.append(pattern_match)
+        except re.error as e:
+            print(f"Regex error for pattern {self.pattern_template}: {e}")
+        
+        return matches
     
     def to_dict(self):
         """Convert to dictionary for saving"""
@@ -112,6 +130,115 @@ class SimplePatternRule:
             data.get("selected_part_index", 0),
             data.get("color", "#cc7000")
         )
+
+
+class HexProcessor:
+    """Clean hex processing engine"""
+    
+    def process_hex_data(self, input_data, pattern_rules, location_rules):
+        """Process hex data with pattern and location rules"""
+        # Sort pattern rules by priority
+        sorted_patterns = sorted(pattern_rules, key=lambda r: (r.priority, pattern_rules.index(r)))
+        
+        # Stage 1: Find all pattern matches
+        all_matches = self.find_all_pattern_matches(input_data, sorted_patterns)
+        
+        # Stage 2: Apply pattern replacements and track positions
+        intermediate_result, location_positions = self.apply_pattern_replacements(input_data, all_matches)
+        
+        # Stage 3: Apply location rules using tracked positions
+        final_result = self.apply_location_rules(intermediate_result, location_positions, location_rules)
+        
+        return intermediate_result, final_result
+    
+    def find_all_pattern_matches(self, text, pattern_rules):
+        """Find all pattern matches and sort by position"""
+        all_matches = []
+        
+        for rule in pattern_rules:
+            matches = rule.find_matches(text)
+            all_matches.extend(matches)
+        
+        # Sort by position (rightmost first for safe replacement)
+        all_matches.sort(key=lambda m: m.start_pos, reverse=True)
+        
+        return all_matches
+    
+    def apply_pattern_replacements(self, text, matches):
+        """Apply pattern replacements from right to left and track positions for location processing"""
+        result = text
+        # Track where each location-enabled replacement ended up
+        location_replacement_positions = []
+        
+        for match in matches:
+            replacement = match.apply_replacement_template()
+            
+            # Calculate current position (adjusting for previous replacements)
+            current_pos = match.start_pos
+            current_end = match.end_pos
+            
+            # Apply the replacement
+            result = result[:current_pos] + replacement + result[current_end:]
+            
+            # If this match has location data, track where the replacement is
+            if match.get_location_value() is not None:
+                location_replacement_positions.append({
+                    'start_pos': current_pos,
+                    'end_pos': current_pos + len(replacement),
+                    'location_value': match.get_location_value(),
+                    'replacement_text': replacement,
+                    'match': match
+                })
+            
+            # Update positions of other matches (those to the left)
+            position_shift = len(replacement) - (current_end - current_pos)
+            for other_match in matches:
+                if other_match.end_pos <= current_pos:
+                    other_match.start_pos += position_shift
+                    other_match.end_pos += position_shift
+        
+        return result, location_replacement_positions
+    
+    def apply_location_rules(self, text, location_replacement_positions, location_rules):
+        """Apply location rules using tracked replacement positions"""
+        if not location_rules or not location_replacement_positions:
+            return text
+        
+        # Create location mapping
+        location_map = {}
+        for find_text, replace_text in location_rules:
+            if find_text and replace_text:
+                location_map[find_text.upper()] = replace_text
+        
+        result = text
+        
+        # Sort by position (rightmost first) to avoid position shifts
+        location_replacement_positions.sort(key=lambda x: x['start_pos'], reverse=True)
+        
+        # Apply location rules to each tracked replacement
+        for pos_info in location_replacement_positions:
+            location_value = pos_info['location_value']
+            if location_value in location_map:
+                location_replacement = location_map[location_value]
+                
+                start_pos = pos_info['start_pos']
+                end_pos = pos_info['end_pos']
+                original_replacement = pos_info['replacement_text']
+                
+                # Create new replacement: location + original
+                new_replacement = location_replacement + original_replacement
+                
+                # Replace at the exact tracked position
+                result = result[:start_pos] + new_replacement + result[end_pos:]
+                
+                # Update positions of other replacements to the left
+                position_shift = len(new_replacement) - len(original_replacement)
+                for other_pos in location_replacement_positions:
+                    if other_pos['end_pos'] <= start_pos:
+                        other_pos['start_pos'] += position_shift
+                        other_pos['end_pos'] += position_shift
+        
+        return result
 
 
 class InputFrame(tb.LabelFrame):
@@ -247,7 +374,8 @@ class InputFrame(tb.LabelFrame):
                 
                 self.text_input.tag_lower(tag_name, self.selection_tag)
                 
-                for match in re.finditer(regex_pattern, content):
+                # Use case-insensitive matching for hex patterns
+                for match in re.finditer(regex_pattern, content, re.IGNORECASE):
                     start_pos = match.start()
                     end_pos = match.end()
                     
@@ -266,8 +394,8 @@ class InputFrame(tb.LabelFrame):
                     end_index = f"{end_line}.{end_char}"
                     self.text_input.tag_add(tag_name, start_index, end_index)
             
-            except re.error:
-                # Skip invalid regex patterns
+            except re.error as e:
+                print(f"Regex error for pattern {rule.pattern_template}: {e}")
                 continue
 
 
@@ -302,7 +430,7 @@ class ColorSquare(tk.Frame):
 
 
 class PatternRulesFrame(tb.LabelFrame):
-    """Frame for pattern rule management with visual template input"""
+    """Frame for pattern rule management"""
     def __init__(self, parent, update_callback):
         super().__init__(parent, text="Pattern Rules")
         self.update_callback = update_callback
@@ -317,11 +445,12 @@ class PatternRulesFrame(tb.LabelFrame):
         tb.Label(add_frame, text="Pattern:").grid(row=0, column=0, padx=5, pady=5, sticky="w")
         self.pattern_entry = tb.Entry(add_frame, width=15)
         self.pattern_entry.grid(row=0, column=1, padx=5, pady=5)
-        self.pattern_entry.insert(0, "## ?? ##")
+        self.pattern_entry.insert(0, "## 2A ##")
         
         tb.Label(add_frame, text="Replace:").grid(row=0, column=2, padx=5, pady=5, sticky="w")
-        self.replace_entry = tb.Entry(add_frame, width=20)
+        self.replace_entry = tb.Entry(add_frame, width=25)
         self.replace_entry.grid(row=0, column=3, padx=5, pady=5)
+        self.replace_entry.insert(0, "[#1-#2-#3]")
         
         # Row 2: Priority, color, location checkbox
         tb.Label(add_frame, text="Priority:").grid(row=1, column=0, padx=5, pady=5, sticky="w")
@@ -329,15 +458,22 @@ class PatternRulesFrame(tb.LabelFrame):
         priority_spinbox = tb.Spinbox(add_frame, from_=-10, to=10, width=5, textvariable=self.priority_var)
         priority_spinbox.grid(row=1, column=1, padx=5, pady=5, sticky="w")
         
+        # Color selector
         self.color_selector = ColorSquare(add_frame, color=self.DEFAULT_COLOR, command=self.select_color)
         self.color_selector.grid(row=1, column=2, padx=5, pady=5)
+        self.color_selector.set_color(self.DEFAULT_COLOR)
         
         self.location_enabled_var = tk.BooleanVar()
         location_check = tb.Checkbutton(add_frame, text="Enable Location", variable=self.location_enabled_var)
         location_check.grid(row=1, column=3, padx=5, pady=5, sticky="w")
         
         # Add button
-        tb.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=1, column=4, padx=5, pady=5)
+        tb.Button(add_frame, text="Add Rule", command=self.add_rule).grid(row=2, column=0, columnspan=4, padx=5, pady=5)
+        
+        # Info label
+        info_label = tb.Label(add_frame, text="Use ## for wildcards, #1 #2 #3 etc. in replacement to reference them", 
+                             font=("TkDefaultFont", 8), foreground="#6c757d")
+        info_label.grid(row=3, column=0, columnspan=4, padx=5, pady=2)
         
         # Save/Load buttons
         button_frame = tb.Frame(self)
@@ -404,12 +540,14 @@ class PatternRulesFrame(tb.LabelFrame):
             self.pattern_rules.append(rule)
             self.update_rules_display()
             
-            # Clear inputs
+            # Clear inputs but keep default pattern
             self.pattern_entry.delete(0, tk.END)
-            self.pattern_entry.insert(0, "## ?? ##")
+            self.pattern_entry.insert(0, "## 2A ##")
             self.replace_entry.delete(0, tk.END)
+            self.replace_entry.insert(0, "[#1-#2-#3]")
             self.priority_var.set(0)
             self.location_enabled_var.set(False)
+            self.color_selector.set_color(self.DEFAULT_COLOR)
             
             self.update_callback()
         else:
@@ -430,7 +568,7 @@ class PatternRulesFrame(tb.LabelFrame):
             rule_frame = tb.Frame(self.rules_list_frame)
             rule_frame.pack(fill=tk.X, padx=5, pady=2)
             
-            # Rule header with priority and location status
+            # Rule header
             header_frame = tb.Frame(rule_frame)
             header_frame.pack(fill=tk.X)
             
@@ -452,9 +590,9 @@ class PatternRulesFrame(tb.LabelFrame):
             content_frame.pack(fill=tk.X, pady=2)
             
             tb.Label(content_frame, text=f"Pattern: {rule.pattern_template}", 
-                    width=25, anchor="w").pack(side=tk.LEFT, padx=5)
+                    width=20, anchor="w").pack(side=tk.LEFT, padx=5)
             tb.Label(content_frame, text=f"→ {rule.replacement}", 
-                    width=30, anchor="w").pack(side=tk.LEFT, padx=5)
+                    width=25, anchor="w").pack(side=tk.LEFT, padx=5)
             
             # Color square and action buttons
             action_frame = tb.Frame(rule_frame)
@@ -471,28 +609,21 @@ class PatternRulesFrame(tb.LabelFrame):
                 loc_frame = tb.Frame(action_frame)
                 loc_frame.pack(side=tk.LEFT, padx=10)
                 
-                tb.Label(loc_frame, text="Location part:", font=("TkDefaultFont", 8)).pack()
+                tb.Label(loc_frame, text="Location wildcard:", font=("TkDefaultFont", 8)).pack()
                 
                 parts_frame = tb.Frame(loc_frame)
                 parts_frame.pack()
                 
-                parts = rule.pattern_template.split()
-                wildcard_idx = 0
-                
-                for part_idx, part in enumerate(parts):
-                    if part == "##":
-                        def make_part_command(rule_idx, wc_idx):
-                            return lambda: self.select_location_part(rule_idx, wc_idx)
-                        
-                        is_selected = wildcard_idx == rule.selected_part_index
-                        part_btn = tb.Button(parts_frame, text=f"##{wildcard_idx+1}", 
-                                           command=make_part_command(idx, wildcard_idx),
-                                           bootstyle="primary" if is_selected else "secondary",
-                                           width=4)
-                        part_btn.pack(side=tk.LEFT, padx=1)
-                        wildcard_idx += 1
-                    else:
-                        tb.Label(parts_frame, text=part, font=("Courier", 8)).pack(side=tk.LEFT, padx=2)
+                for wildcard_idx in range(rule.get_wildcard_count()):
+                    def make_part_command(rule_idx, wc_idx):
+                        return lambda: self.select_location_part(rule_idx, wc_idx)
+                    
+                    is_selected = wildcard_idx == rule.selected_part_index
+                    part_btn = tb.Button(parts_frame, text=f"#{wildcard_idx+1}", 
+                                       command=make_part_command(idx, wildcard_idx),
+                                       bootstyle="primary" if is_selected else "secondary",
+                                       width=4)
+                    part_btn.pack(side=tk.LEFT, padx=1)
             
             # Edit and delete buttons
             tb.Button(action_frame, text="Edit", command=lambda i=idx: self.edit_rule(i)).pack(side=tk.RIGHT, padx=2)
@@ -633,20 +764,7 @@ class PatternRulesFrame(tb.LabelFrame):
                 if isinstance(data, list):
                     for rule_data in data:
                         if isinstance(rule_data, dict):
-                            # Handle both old and new format
-                            if "pattern_template" in rule_data:
-                                # New format
-                                rule = SimplePatternRule.from_dict(rule_data)
-                            else:
-                                # Old format - convert
-                                rule = SimplePatternRule(
-                                    pattern_template=rule_data.get("pattern", ""),
-                                    replacement=rule_data.get("replacement", ""),
-                                    priority=0,
-                                    location_enabled=False,
-                                    selected_part_index=0,
-                                    color=rule_data.get("color", self.DEFAULT_COLOR)
-                                )
+                            rule = SimplePatternRule.from_dict(rule_data)
                             self.pattern_rules.append(rule)
                 
                 self.update_rules_display()
@@ -671,7 +789,7 @@ class LocationRulesFrame(tb.LabelFrame):
         main_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Left section: Affected patterns
-        left_frame = tb.LabelFrame(main_container, text="Affected Patterns")
+        left_frame = tb.LabelFrame(main_container, text="Location-Enabled Patterns")
         left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
         self.affected_patterns_frame = tb.Frame(left_frame)
@@ -756,18 +874,19 @@ class LocationRulesFrame(tb.LabelFrame):
             for part in parts:
                 if part == "##":
                     is_selected = wildcard_idx == rule.selected_part_index
-                    part_label = tb.Label(pattern_display_frame, text=part,
+                    # Use regular tkinter Label for styling
+                    part_label = tk.Label(pattern_display_frame, text=f"#{wildcard_idx+1}",
                                         background="#007bff" if is_selected else "#e9ecef",
                                         foreground="white" if is_selected else "#495057",
                                         font=("Courier", 9, "bold"), relief="raised", bd=1)
                     part_label.pack(side=tk.LEFT, padx=1)
                     wildcard_idx += 1
                 else:
-                    tb.Label(pattern_display_frame, text=part, 
+                    tk.Label(pattern_display_frame, text=part, 
                            font=("Courier", 9), foreground="#495057").pack(side=tk.LEFT, padx=1)
             
             # Show which part is selected
-            selected_text = f"Selected: #{rule.selected_part_index + 1} wildcard"
+            selected_text = f"Location wildcard: #{rule.selected_part_index + 1}"
             tb.Label(pattern_frame, text=selected_text, 
                    font=("TkDefaultFont", 8), foreground="#007bff").pack(anchor="w")
             
@@ -813,14 +932,15 @@ class LocationRulesFrame(tb.LabelFrame):
             
             tb.Label(content_frame, text=f"{idx+1}.", width=3).pack(side=tk.LEFT, padx=2)
             
-            find_label = tb.Label(content_frame, text=find_text, 
+            # Use regular tkinter Labels for styling
+            find_label = tk.Label(content_frame, text=find_text, 
                                 background="#f8f9fa", font=("Courier", 9), 
                                 relief="sunken", bd=1, width=8)
             find_label.pack(side=tk.LEFT, padx=2)
             
             tb.Label(content_frame, text="→").pack(side=tk.LEFT, padx=2)
             
-            replace_label = tb.Label(content_frame, text=replace_text, 
+            replace_label = tk.Label(content_frame, text=replace_text, 
                                    background="#e3f2fd", font=("Courier", 9), 
                                    relief="sunken", bd=1, width=12)
             replace_label.pack(side=tk.LEFT, padx=2)
@@ -909,11 +1029,9 @@ class OutputFrame(tb.LabelFrame):
         if pattern_rules:
             for i, rule in enumerate(pattern_rules):
                 try:
-                    # Highlight replacement text with rule's color
+                    # Skip highlighting complex replacement templates
                     replacement_text = rule.replacement
-                    
-                    # Skip highlighting if replacement contains escape sequences or complex templates
-                    if any(seq in replacement_text for seq in ['\\n', '\\t', '\\r', '{', '}']):
+                    if any(seq in replacement_text for seq in ['\\n', '\\t', '\\r', '{', '}', '#']):
                         continue
                     
                     tag_name = f"output_color_{i}"
@@ -944,65 +1062,6 @@ class OutputFrame(tb.LabelFrame):
             end_idx = f"{start_idx}+{len(text_to_highlight)}c"
             self.text_output.tag_add(tag_name, start_idx, end_idx)
             start_idx = end_idx
-
-
-class EnhancedHexProcessor:
-    """Process hex data with pattern and location rules"""
-    
-    def process_hex_data(self, input_data, pattern_rules, location_rules):
-        """Apply two-stage processing: patterns first, then locations"""
-        # Sort pattern rules by priority (negative first, then by order)
-        sorted_patterns = sorted(pattern_rules, key=lambda r: (r.priority, pattern_rules.index(r)))
-        
-        # Stage 1: Apply pattern rules
-        intermediate_result = self.apply_pattern_rules(input_data, sorted_patterns)
-        
-        # Stage 2: Apply location rules (only to location-enabled patterns)
-        final_result = self.apply_location_rules(intermediate_result, pattern_rules, location_rules)
-        
-        return intermediate_result, final_result
-    
-    def apply_pattern_rules(self, text, pattern_rules):
-        """Apply pattern rules with template processing"""
-        result = text
-        
-        for rule in pattern_rules:
-            try:
-                regex_pattern = rule.to_regex()
-                
-                def replace_func(match):
-                    return rule.process_replacement(match.groups())
-                
-                result = re.sub(regex_pattern, replace_func, result)
-            except re.error:
-                # Skip invalid regex patterns
-                continue
-        
-        return result
-    
-    def apply_location_rules(self, text, pattern_rules, location_rules):
-        """Apply location rules only to specified parts of location-enabled patterns"""
-        if not location_rules:
-            return text
-        
-        result = text
-        
-        # Get location-enabled patterns and their capture groups
-        location_patterns = [rule for rule in pattern_rules if rule.location_enabled]
-        
-        if not location_patterns:
-            return text
-        
-        # For simplicity, apply location rules to remaining text
-        # In a more sophisticated implementation, we would track which parts
-        # of the text came from which capture groups and only replace those
-        for find_text, replace_text in location_rules:
-            if find_text and replace_text:
-                # Use word boundaries to avoid partial matches
-                pattern = r'\b' + re.escape(find_text) + r'\b'
-                result = re.sub(pattern, replace_text, result)
-        
-        return result
 
 
 class HexManipulator(tb.Window):
@@ -1054,7 +1113,7 @@ class HexManipulator(tb.Window):
         else:
             self.geometry('1200x800')
         
-        self.processor = EnhancedHexProcessor()
+        self.processor = HexProcessor()
         self.create_ui()
         
         # Save settings when closing
@@ -1113,7 +1172,7 @@ class HexManipulator(tb.Window):
             self.input_frame.highlight_patterns(pattern_rules)
         
         if input_text:
-            # Process with two-stage pipeline
+            # Process with clean architecture
             intermediate_result, final_result = self.processor.process_hex_data(
                 input_text, pattern_rules, location_rules)
             
